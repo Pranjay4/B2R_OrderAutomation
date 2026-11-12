@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f5f7fa; color: #142132; font-family: Arial, Helvetica, sans-serif; }
+button, input, select { font: inherit; }
+@layer components {
+  .container-shell { @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8; }
+  .card { @apply rounded-2xl border border-line bg-white shadow-card; }
+  .eyebrow { @apply text-[11px] font-bold uppercase tracking-[.16em] text-slate-500; }
+}
