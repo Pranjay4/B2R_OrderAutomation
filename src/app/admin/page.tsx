@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Dispatch, FormEvent, SetStateAction, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   BarChart3,
@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { validateSlabs } from "@/lib/scheme-validation";
 import type { Order, Product, Scheme, SchemeType } from "@/lib/types";
 
 type View = "overview" | "orders" | "products" | "schemes";
@@ -43,6 +44,11 @@ type SchemeForm = {
   expires_at: string;
   notes: string;
 };
+type SchemeSlabForm = {
+  minimum_quantity: string;
+  maximum_quantity: string;
+  discount_percentage: string;
+};
 
 const emptyProduct: ProductForm = {
   sku: "",
@@ -65,6 +71,7 @@ const newScheme = (): SchemeForm => ({
   expires_at: "",
   notes: "",
 });
+const newSlab = (): SchemeSlabForm => ({ minimum_quantity: "1", maximum_quantity: "", discount_percentage: "0" });
 
 const formatDate = (value: string) =>
   new Intl.DateTimeFormat("en-IN", {
@@ -85,6 +92,18 @@ function withTimeout<T>(request: PromiseLike<T>, label: string): Promise<T> {
   ]).finally(() => window.clearTimeout(timeoutId));
 }
 
+function SchemeSlabEditor({ slabs, setSlabs }: { slabs: SchemeSlabForm[]; setSlabs: Dispatch<SetStateAction<SchemeSlabForm[]>> }) {
+  return <div className="mt-4 rounded-xl border border-line p-4">
+    <div className="flex items-center justify-between"><div><p className="font-bold">Quantity tiers</p><p className="text-xs text-slate-500">Ranges must not overlap. Leave maximum empty for the final open-ended tier.</p></div><button type="button" onClick={() => setSlabs((current) => [...current, newSlab()])} className="rounded-lg border border-line px-3 py-2 text-sm font-bold">Add tier</button></div>
+    <div className="mt-3 space-y-2">{slabs.map((slab, index) => <div key={index} className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+      <input required type="number" min="1" placeholder="Minimum units" aria-label={`Tier ${index + 1} minimum units`} value={slab.minimum_quantity} onChange={(event) => setSlabs((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, minimum_quantity: event.target.value } : item))} className="rounded-lg border border-line px-3 py-2" />
+      <input type="number" min="1" placeholder="Maximum units" aria-label={`Tier ${index + 1} maximum units`} value={slab.maximum_quantity} onChange={(event) => setSlabs((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, maximum_quantity: event.target.value } : item))} className="rounded-lg border border-line px-3 py-2" />
+      <input required type="number" min="0" max="100" step="0.01" placeholder="Discount %" aria-label={`Tier ${index + 1} discount percentage`} value={slab.discount_percentage} onChange={(event) => setSlabs((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, discount_percentage: event.target.value } : item))} className="rounded-lg border border-line px-3 py-2" />
+      <button type="button" disabled={slabs.length === 1} onClick={() => setSlabs((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="rounded-lg border border-line px-3 py-2 text-sm font-bold disabled:opacity-40" aria-label={`Remove tier ${index + 1}`}>Remove</button>
+    </div>)}</div>
+  </div>;
+}
+
 export default function AdminPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -95,6 +114,7 @@ export default function AdminPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [productForm, setProductForm] = useState<ProductForm>(emptyProduct);
   const [schemeForm, setSchemeForm] = useState<SchemeForm>(newScheme());
+  const [slabForms, setSlabForms] = useState<SchemeSlabForm[]>([newSlab()]);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingScheme, setEditingScheme] = useState<Scheme | null>(null);
   const [view, setView] = useState<View>("overview");
@@ -216,6 +236,19 @@ export default function AdminPage() {
     event.preventDefault();
     setBusy(true);
     setError("");
+    const slabs = slabForms.map((slab) => ({
+      minimum_quantity: Number(slab.minimum_quantity),
+      maximum_quantity: slab.maximum_quantity ? Number(slab.maximum_quantity) : null,
+      discount_percentage: Number(slab.discount_percentage),
+    }));
+    if (schemeForm.scheme_type === "slab") {
+      const slabError = validateSlabs(slabs);
+      if (slabError) {
+        setError(slabError);
+        setBusy(false);
+        return;
+      }
+    }
     const payload = {
       product_id: schemeForm.product_id,
       scheme_type: schemeForm.scheme_type,
@@ -228,10 +261,19 @@ export default function AdminPage() {
       notes: schemeForm.notes || null,
       updated_at: new Date().toISOString(),
     };
-    const query = editingScheme
-      ? getSupabase().from("schemes").update(payload).eq("id", editingScheme.id)
-      : getSupabase().from("schemes").insert({ ...payload, status: "draft" });
-    const { error: saveError } = await query;
+    const { error: saveError } = await getSupabase().rpc("save_scheme_with_slabs", {
+      p_scheme_id: editingScheme?.id ?? null,
+      p_product_id: payload.product_id,
+      p_scheme_type: payload.scheme_type,
+      p_minimum_quantity: payload.minimum_quantity,
+      p_free_quantity: payload.free_quantity,
+      p_discount_percentage: payload.discount_percentage,
+      p_repeat_offer: payload.repeat_offer,
+      p_starts_at: payload.starts_at,
+      p_expires_at: payload.expires_at,
+      p_notes: payload.notes,
+      p_slabs: schemeForm.scheme_type === "slab" ? slabs : [],
+    });
     setBusy(false);
     if (saveError) {
       setError(saveError.message);
@@ -239,6 +281,7 @@ export default function AdminPage() {
     }
     setMessage(editingScheme ? "Scheme updated." : "Scheme saved as draft.");
     setSchemeForm(newScheme());
+    setSlabForms([newSlab()]);
     setEditingScheme(null);
     await loadData();
   };
@@ -311,6 +354,11 @@ export default function AdminPage() {
       expires_at: scheme.expires_at?.slice(0, 16) ?? "",
       notes: scheme.notes ?? "",
     });
+    setSlabForms((scheme.scheme_slabs ?? []).map((slab) => ({
+      minimum_quantity: String(slab.minimum_quantity),
+      maximum_quantity: slab.maximum_quantity === null ? "" : String(slab.maximum_quantity),
+      discount_percentage: String(slab.discount_percentage),
+    })));
     setView("schemes");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -385,7 +433,7 @@ export default function AdminPage() {
 
         {view === "schemes" && <section>
           <div className="mb-6"><p className="eyebrow">Trade offer management</p><h1 className="mt-1 text-3xl font-black">Schemes</h1><p className="mt-2 text-sm text-slate-500">Draft, publish, edit, or deactivate offers without touching code.</p></div>
-          <form onSubmit={saveScheme} className="card mb-6 p-5"><div className="mb-4 flex items-center justify-between"><h2 className="font-black">{editingScheme ? "Edit scheme" : "New scheme"}</h2>{editingScheme && <button type="button" onClick={() => { setEditingScheme(null); setSchemeForm(newScheme()); }} className="text-sm font-bold text-slate-500">Cancel</button>}</div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><select required value={schemeForm.product_id} onChange={(event) => setSchemeForm((current) => ({ ...current, product_id: event.target.value }))} className="rounded-xl border border-line px-3 py-3"><option value="">Select product</option>{products.filter((product) => product.is_active).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.sku}</option>)}</select><select value={schemeForm.scheme_type} onChange={(event) => setSchemeForm((current) => ({ ...current, scheme_type: event.target.value as SchemeType }))} className="rounded-xl border border-line px-3 py-3"><option value="buy_x_get_y">Buy X get Y</option><option value="percentage">Percentage discount</option><option value="slab">Quantity slab</option></select><input required type="number" min="1" placeholder="Minimum quantity" value={schemeForm.minimum_quantity} onChange={(event) => setSchemeForm((current) => ({ ...current, minimum_quantity: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input type="number" min="0" placeholder="Free quantity" value={schemeForm.free_quantity} onChange={(event) => setSchemeForm((current) => ({ ...current, free_quantity: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input type="number" min="0" max="100" step="0.01" placeholder="Discount %" value={schemeForm.discount_percentage} onChange={(event) => setSchemeForm((current) => ({ ...current, discount_percentage: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required type="datetime-local" value={schemeForm.starts_at} onChange={(event) => setSchemeForm((current) => ({ ...current, starts_at: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input type="datetime-local" value={schemeForm.expires_at} onChange={(event) => setSchemeForm((current) => ({ ...current, expires_at: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><textarea placeholder="Notes for the team or customer" value={schemeForm.notes} onChange={(event) => setSchemeForm((current) => ({ ...current, notes: event.target.value }))} className="min-h-12 rounded-xl border border-line px-3 py-3 sm:col-span-2" /></div><label className="mt-3 flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={schemeForm.repeat_offer} onChange={(event) => setSchemeForm((current) => ({ ...current, repeat_offer: event.target.checked }))} /> Repeat offer for every qualifying batch</label><button disabled={busy} className="mt-4 rounded-xl bg-mint px-4 py-3 text-sm font-bold text-white">{busy ? "Saving..." : editingScheme ? "Update scheme" : "Save as draft"}</button></form>
+          <form onSubmit={saveScheme} className="card mb-6 p-5"><div className="mb-4 flex items-center justify-between"><h2 className="font-black">{editingScheme ? "Edit scheme" : "New scheme"}</h2>{editingScheme && <button type="button" onClick={() => { setEditingScheme(null); setSchemeForm(newScheme()); setSlabForms([newSlab()]); }} className="text-sm font-bold text-slate-500">Cancel</button>}</div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><select required value={schemeForm.product_id} onChange={(event) => setSchemeForm((current) => ({ ...current, product_id: event.target.value }))} className="rounded-xl border border-line px-3 py-3"><option value="">Select product</option>{products.filter((product) => product.is_active).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.sku}</option>)}</select><select value={schemeForm.scheme_type} onChange={(event) => setSchemeForm((current) => ({ ...current, scheme_type: event.target.value as SchemeType }))} className="rounded-xl border border-line px-3 py-3"><option value="buy_x_get_y">Buy X get Y</option><option value="percentage">Percentage discount</option><option value="slab">Quantity slab</option></select><input required type="number" min="1" placeholder="Minimum quantity" value={schemeForm.minimum_quantity} onChange={(event) => setSchemeForm((current) => ({ ...current, minimum_quantity: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input type="number" min="0" placeholder="Free quantity" value={schemeForm.free_quantity} onChange={(event) => setSchemeForm((current) => ({ ...current, free_quantity: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input type="number" min="0" max="100" step="0.01" placeholder="Discount %" value={schemeForm.discount_percentage} onChange={(event) => setSchemeForm((current) => ({ ...current, discount_percentage: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required type="datetime-local" value={schemeForm.starts_at} onChange={(event) => setSchemeForm((current) => ({ ...current, starts_at: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input type="datetime-local" value={schemeForm.expires_at} onChange={(event) => setSchemeForm((current) => ({ ...current, expires_at: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><textarea placeholder="Notes for the team or customer" value={schemeForm.notes} onChange={(event) => setSchemeForm((current) => ({ ...current, notes: event.target.value }))} className="min-h-12 rounded-xl border border-line px-3 py-3 sm:col-span-2" /></div>{schemeForm.scheme_type === "slab" && <SchemeSlabEditor slabs={slabForms} setSlabs={setSlabForms} />}<label className="mt-3 flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={schemeForm.repeat_offer} onChange={(event) => setSchemeForm((current) => ({ ...current, repeat_offer: event.target.checked }))} /> Repeat offer for every qualifying batch</label><button disabled={busy} className="mt-4 rounded-xl bg-mint px-4 py-3 text-sm font-bold text-white">{busy ? "Saving..." : editingScheme ? "Update scheme" : "Save as draft"}</button></form>
           <div className="space-y-3">{schemes.map((scheme) => <article key={scheme.id} className="card flex flex-col justify-between gap-4 p-5 sm:flex-row sm:items-center"><div><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-paper px-2 py-1 text-xs font-black capitalize text-slate-600">{scheme.status}</span><span className="text-xs text-slate-400">{formatDate(scheme.updated_at)}</span></div><h2 className="mt-2 font-black">{products.find((product) => product.id === scheme.product_id)?.name ?? "Unknown product"}</h2><p className="text-sm text-slate-500">{scheme.scheme_type === "buy_x_get_y" ? `Buy ${scheme.minimum_quantity}, get ${scheme.free_quantity} free` : scheme.scheme_type === "percentage" ? `${scheme.discount_percentage}% discount from ${scheme.minimum_quantity} units` : "Quantity slab offer"}</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => beginSchemeEdit(scheme)} className="flex items-center gap-1 rounded-lg border border-line px-3 py-2 text-sm font-bold"><Edit3 size={15} /> Edit</button>{scheme.status !== "published" && <button type="button" disabled={busy} onClick={() => void updateSchemeStatus(scheme, "published")} className="rounded-lg bg-mint px-3 py-2 text-sm font-bold text-white">Publish</button>}{scheme.status === "published" && <button type="button" disabled={busy} onClick={() => void updateSchemeStatus(scheme, "inactive")} className="rounded-lg border border-line px-3 py-2 text-sm font-bold">Deactivate</button>}</div></article>)}{schemes.length === 0 && <div className="card p-8 text-center text-sm text-slate-500">No schemes yet. Create the first draft above.</div>}</div>
         </section>}
       </div>

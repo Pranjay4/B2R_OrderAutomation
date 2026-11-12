@@ -108,4 +108,30 @@ The production build compiled `/api/orders` and completed Next.js type checking 
 
 Code implementation and local build validation are complete, but Phase 1 is not fully production-complete until the migration is applied and the owner/anonymous/unlisted-user RLS scenarios are verified in a test or controlled Supabase environment.
 
-Stop here for approval before beginning Phase 2.
+## Phase 2A: Slab-tier management
+
+**Status:** Implemented in code; migration and owner-authenticated browser verification pending manual application.
+
+- Added reusable slab validation for positive quantities, valid ranges, non-overlapping tiers, and 0–100% discounts.
+- Added add/remove/edit controls for slab tiers in the owner scheme form.
+- Existing slab tiers are loaded when editing a scheme.
+- Added `004_phase2_scheme_management.sql` with an owner-only transactional RPC that saves the parent scheme and replaces its slabs atomically.
+- Non-slab schemes cannot retain stale slab rows.
+- Slab schemes require at least one tier and support an open-ended final range.
+
+### Phase 2A validation
+
+- `npx tsc --noEmit` passed.
+- `npm run build` passed.
+- `git diff --check` passed.
+- Live RPC and RLS verification remains pending until migration `004_phase2_scheme_management.sql` is applied in Supabase.
+
+### Manual Phase 2A completion gate
+
+1. Apply `004_phase2_scheme_management.sql` after the Phase 1 migration.
+2. As the designated owner, create a slab scheme with adjacent ranges and an open-ended final range.
+3. Confirm invalid overlapping ranges are rejected without saving partial data.
+4. Edit the scheme, remove a tier, and confirm the public calculator reflects the saved ranges.
+5. Change a slab scheme to another type and confirm old slab rows are removed.
+
+Do not begin Phase 2B until these owner-authenticated checks pass.
