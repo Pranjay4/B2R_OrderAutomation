@@ -1,5 +1,5 @@
 import { createClient } from "./supabase/server";
-import type { Product, Scheme } from "./types";
+import type { CatalogueData, Product, Scheme } from "./types";
 
 const sampleProducts: Product[] = [
   {
@@ -99,16 +99,17 @@ const sampleProducts: Product[] = [
   }
 ];
 
-export async function getProducts(): Promise<Product[]> {
+export async function getProducts(): Promise<CatalogueData> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !supabaseKey) return sampleProducts;
+  if (!supabaseUrl || !supabaseKey) return { products: sampleProducts, isPreview: true };
   const supabase = await createClient();
   const { data, error } = await supabase.from("products").select("*, schemes(*, scheme_slabs(*))").eq("is_active", true).order("name");
   if (error) throw new Error(error.message);
   const now = Date.now();
-  return (data ?? []).map((product) => ({
+  const products = (data ?? []).map((product) => ({
     ...product,
     schemes: (product.schemes ?? []).filter((scheme: Scheme) => scheme.status === "published" && new Date(scheme.starts_at).getTime() <= now && (!scheme.expires_at || new Date(scheme.expires_at).getTime() > now))
   })) as Product[];
+  return { products, isPreview: false };
 }

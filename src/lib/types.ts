@@ -44,6 +44,11 @@ export type OrderLine = {
   quantity: number;
 };
 
+export type CatalogueData = {
+  products: Product[];
+  isPreview: boolean;
+};
+
 export type Order = {
   id: string;
   order_number: string;
