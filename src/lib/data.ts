@@ -1,4 +1,4 @@
-import { createClient } from "./supabase/server";
+import { createReadOnlyClient } from "./supabase/server";
 import type { CatalogueData, Product, Scheme } from "./types";
 
 const sampleProducts: Product[] = [
@@ -103,7 +103,7 @@ export async function getProducts(): Promise<CatalogueData> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!supabaseUrl || !supabaseKey) return { products: sampleProducts, isPreview: true };
-  const supabase = await createClient();
+  const supabase = await createReadOnlyClient();
   const { data, error } = await supabase.from("products").select("*, schemes(*, scheme_slabs(*))").eq("is_active", true).order("name");
   if (error) throw new Error(error.message);
   const now = Date.now();

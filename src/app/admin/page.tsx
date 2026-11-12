@@ -32,6 +32,7 @@ type ProductForm = {
   pack_size: string;
   mrp: string;
   base_price: string;
+  image_url: string;
 };
 type SchemeForm = {
   product_id: string;
@@ -58,6 +59,7 @@ const emptyProduct: ProductForm = {
   pack_size: "",
   mrp: "",
   base_price: "",
+  image_url: "",
 };
 
 const newScheme = (): SchemeForm => ({
@@ -126,6 +128,7 @@ export default function AdminPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
+  const [productImage, setProductImage] = useState<File | null>(null);
 
   const getSupabase = () => createClient();
 
@@ -196,16 +199,38 @@ export default function AdminPage() {
     event.preventDefault();
     setBusy(true);
     setError("");
+    const supabase = getSupabase();
+    let imageUrl = productForm.image_url || null;
+    let uploadedPath: string | null = null;
+    if (productImage) {
+      if (!["image/jpeg", "image/png", "image/webp"].includes(productImage.type) || productImage.size > 5 * 1024 * 1024) {
+        setBusy(false);
+        setError("Product images must be JPG, PNG, or WebP files up to 5 MB.");
+        return;
+      }
+      const extension = productImage.name.split(".").pop()?.toLowerCase() || "jpg";
+      uploadedPath = `products/${crypto.randomUUID()}.${extension}`;
+      const { error: uploadError } = await supabase.storage.from("product-images").upload(uploadedPath, productImage, { cacheControl: "3600", upsert: false, contentType: productImage.type });
+      if (uploadError) {
+        setBusy(false);
+        setError(`Image upload failed: ${uploadError.message}`);
+        return;
+      }
+      const { data: publicUrl } = supabase.storage.from("product-images").getPublicUrl(uploadedPath);
+      imageUrl = publicUrl.publicUrl;
+    }
     const payload = {
       ...productForm,
+      image_url: imageUrl,
       mrp: Number(productForm.mrp),
       base_price: Number(productForm.base_price),
       updated_at: new Date().toISOString(),
     };
     const query = editingProduct
-      ? getSupabase().from("products").update(payload).eq("id", editingProduct.id)
-      : getSupabase().from("products").insert({ ...payload, is_active: true });
+      ? supabase.from("products").update(payload).eq("id", editingProduct.id)
+      : supabase.from("products").insert({ ...payload, is_active: true });
     const { error: saveError } = await query;
+    if (saveError && uploadedPath) await supabase.storage.from("product-images").remove([uploadedPath]);
     setBusy(false);
     if (saveError) {
       setError(saveError.message);
@@ -213,6 +238,7 @@ export default function AdminPage() {
     }
     setMessage(editingProduct ? "Product updated." : "Product added.");
     setProductForm(emptyProduct);
+    setProductImage(null);
     setEditingProduct(null);
     await loadData();
   };
@@ -336,7 +362,9 @@ export default function AdminPage() {
       pack_size: product.pack_size,
       mrp: String(product.mrp),
       base_price: String(product.base_price),
+      image_url: product.image_url ?? "",
     });
+    setProductImage(null);
     setView("products");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -376,9 +404,9 @@ export default function AdminPage() {
           <h1 className="mt-5 text-2xl font-black">Owner workspace</h1>
           <p className="mt-2 text-sm text-slate-500">Manage products, schemes, and incoming order requests.</p>
           <form onSubmit={login} className="mt-7 space-y-4">
-            <input required type="email" placeholder="Owner email" value={email} onChange={(event) => setEmail(event.target.value)} className="w-full rounded-xl border border-line px-4 py-3" />
-            <input required type="password" placeholder="Password" value={password} onChange={(event) => setPassword(event.target.value)} className="w-full rounded-xl border border-line px-4 py-3" />
-            <button disabled={busy} className="w-full rounded-xl bg-navy px-4 py-3 font-bold text-white">{busy ? "Signing in..." : "Sign in securely"}</button>
+            <label className="block"><span className="sr-only">Owner email</span><input required type="email" autoComplete="email" placeholder="Owner email" value={email} onChange={(event) => setEmail(event.target.value)} className="w-full rounded-xl border border-line px-4 py-3" /></label>
+            <label className="block"><span className="sr-only">Password</span><input required type="password" autoComplete="current-password" placeholder="Password" value={password} onChange={(event) => setPassword(event.target.value)} className="w-full rounded-xl border border-line px-4 py-3" /></label>
+            <button type="submit" disabled={busy} className="w-full rounded-xl bg-navy px-4 py-3 font-bold text-white">{busy ? "Signing in..." : "Sign in securely"}</button>
           </form>
           {error && <p role="alert" className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
         </div>
@@ -403,9 +431,9 @@ export default function AdminPage() {
       </header>
       <div className="container-shell py-6">
         <nav className="mb-6 flex gap-2 overflow-x-auto border-b border-line pb-2" aria-label="Admin sections">
-          {navItems.map(({ id, label, icon: Icon }) => <button key={id} type="button" onClick={() => setView(id)} className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold ${view === id ? "bg-navy text-white" : "text-slate-600 hover:bg-white"}`}><Icon size={16} /> {label}{id === "orders" && orders.filter((order) => order.status === "new").length > 0 && <span className="rounded-full bg-coral px-2 py-0.5 text-xs text-white">{orders.filter((order) => order.status === "new").length}</span>}</button>)}
+          {navItems.map(({ id, label, icon: Icon }) => <button key={id} type="button" onClick={() => setView(id)} aria-current={view === id ? "page" : undefined} className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold ${view === id ? "bg-navy text-white" : "text-slate-600 hover:bg-white"}`}><Icon size={16} /> {label}{id === "orders" && orders.filter((order) => order.status === "new").length > 0 && <span className="rounded-full bg-coral px-2 py-0.5 text-xs text-white">{orders.filter((order) => order.status === "new").length}</span>}</button>)}
         </nav>
-        {message && <div className="mb-5 flex items-center justify-between rounded-xl bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800"><span className="flex items-center gap-2"><CheckCircle2 size={17} /> {message}</span><button type="button" onClick={() => setMessage("")} aria-label="Dismiss message"><X size={16} /></button></div>}
+        {message && <div className="mb-5 flex items-center justify-between rounded-xl bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800" role="status" aria-live="polite"><span className="flex items-center gap-2"><CheckCircle2 size={17} /> {message}</span><button type="button" onClick={() => setMessage("")} aria-label="Dismiss message"><X size={16} /></button></div>}
         {error && <div role="alert" className="mb-5 flex items-center gap-2 rounded-xl bg-red-50 px-4 py-3 text-sm font-bold text-red-700"><CircleAlert size={17} /> {error}</div>}
         {loadingData && <div className="mb-5 flex items-center justify-between rounded-xl bg-white px-4 py-3 text-sm font-bold text-slate-600 shadow-card"><span className="flex items-center gap-2"><RefreshCw size={17} className="animate-spin text-mint" /> Loading the latest workspace data...</span><button type="button" onClick={() => void loadData()} className="font-bold text-mint">Retry</button></div>}
 
@@ -427,7 +455,7 @@ export default function AdminPage() {
 
         {view === "products" && <section>
           <div className="mb-6 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="eyebrow">Catalogue management</p><h1 className="mt-1 text-3xl font-black">Products</h1><p className="mt-2 text-sm text-slate-500">Edit pricing or hide products without deleting their order history.</p></div><button type="button" onClick={() => { setEditingProduct(null); setProductForm(emptyProduct); }} className="flex items-center gap-2 rounded-xl bg-navy px-4 py-3 text-sm font-bold text-white"><Plus size={17} /> Add product</button></div>
-          <form onSubmit={saveProduct} className="card mb-6 p-5"><div className="mb-4 flex items-center justify-between"><h2 className="font-black">{editingProduct ? "Edit product" : "New product"}</h2>{editingProduct && <button type="button" onClick={() => { setEditingProduct(null); setProductForm(emptyProduct); }} className="text-sm font-bold text-slate-500">Cancel</button>}</div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{Object.entries(productForm).map(([key, value]) => <input key={key} required placeholder={key.replace("_", " ")} value={value} onChange={(event) => setProductForm((current) => ({ ...current, [key]: event.target.value }))} className="rounded-xl border border-line px-3 py-3" />)}</div><button disabled={busy} className="mt-4 rounded-xl bg-mint px-4 py-3 text-sm font-bold text-white">{busy ? "Saving..." : editingProduct ? "Update product" : "Save product"}</button></form>
+          <form onSubmit={saveProduct} className="card mb-6 p-5"><div className="mb-4 flex items-center justify-between"><h2 className="font-black">{editingProduct ? "Edit product" : "New product"}</h2>{editingProduct && <button type="button" onClick={() => { setEditingProduct(null); setProductForm(emptyProduct); setProductImage(null); }} className="text-sm font-bold text-slate-500">Cancel</button>}</div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><input required placeholder="SKU" value={productForm.sku} onChange={(event) => setProductForm((current) => ({ ...current, sku: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required placeholder="Name" value={productForm.name} onChange={(event) => setProductForm((current) => ({ ...current, name: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required placeholder="Brand" value={productForm.brand} onChange={(event) => setProductForm((current) => ({ ...current, brand: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required placeholder="Category" value={productForm.category} onChange={(event) => setProductForm((current) => ({ ...current, category: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required placeholder="Pack size" value={productForm.pack_size} onChange={(event) => setProductForm((current) => ({ ...current, pack_size: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required type="number" min="0" step="0.01" placeholder="MRP" value={productForm.mrp} onChange={(event) => setProductForm((current) => ({ ...current, mrp: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required type="number" min="0" step="0.01" placeholder="Base price" value={productForm.base_price} onChange={(event) => setProductForm((current) => ({ ...current, base_price: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><label className="rounded-xl border border-line px-3 py-2 text-sm font-bold text-slate-600"><span className="block text-xs text-slate-500">Product image</span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setProductImage(event.target.files?.[0] ?? null)} className="mt-1 w-full text-sm" /><span className="mt-1 block text-xs font-normal text-slate-500">JPG, PNG, or WebP up to 5 MB</span></label></div>{(productImage || productForm.image_url) && <div className="mt-4 flex items-center gap-3 rounded-xl bg-paper p-3">{productForm.image_url && <img src={productForm.image_url} alt="Current product" className="h-16 w-16 rounded-lg object-contain" />}<span className="text-sm text-slate-600">{productImage ? `Selected: ${productImage.name}` : "Current product image"}</span></div>}<button disabled={busy} className="mt-4 rounded-xl bg-mint px-4 py-3 text-sm font-bold text-white">{busy ? productImage ? "Uploading image..." : "Saving..." : editingProduct ? "Update product" : "Save product"}</button></form>
           <div className="card overflow-hidden"><div className="flex flex-col gap-3 border-b border-line p-4 sm:flex-row"><label className="flex flex-1 items-center gap-2 rounded-xl border border-line px-3"><Search size={17} className="text-slate-400" /><input value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="Search products..." className="w-full py-2 outline-none" /></label><label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} /> Show hidden</label></div><div className="divide-y divide-line">{filteredProducts.map((product) => <div key={product.id} className="flex flex-col justify-between gap-3 p-4 sm:flex-row sm:items-center"><div><div className="flex items-center gap-2"><h2 className="font-black">{product.name}</h2><span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${product.is_active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{product.is_active ? "Active" : "Hidden"}</span></div><p className="text-sm text-slate-500">{product.brand} · {product.sku} · ₹{product.base_price.toFixed(2)}</p></div><div className="flex gap-2"><button type="button" onClick={() => beginProductEdit(product)} className="flex items-center gap-1 rounded-lg border border-line px-3 py-2 text-sm font-bold"><Edit3 size={15} /> Edit</button><button type="button" disabled={busy} onClick={() => void toggleProduct(product)} className="rounded-lg border border-line px-3 py-2 text-sm font-bold text-slate-600">{product.is_active ? "Hide" : "Restore"}</button></div></div>)}{filteredProducts.length === 0 && <p className="p-8 text-center text-sm text-slate-500">No products match this search.</p>}</div></div>
         </section>}
 
