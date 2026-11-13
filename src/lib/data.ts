@@ -113,3 +113,8 @@ export async function getProducts(): Promise<CatalogueData> {
   })) as Product[];
   return { products, isPreview: false };
 }
+
+export async function getProduct(id: string): Promise<Product | null> {
+  const catalogue = await getProducts();
+  return catalogue.products.find((product) => product.id === id) ?? null;
+}

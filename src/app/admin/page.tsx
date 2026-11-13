@@ -8,6 +8,7 @@ import {
   ChevronRight,
   CircleAlert,
   Database,
+  Download,
   Edit3,
   Filter,
   LockKeyhole,
@@ -17,6 +18,7 @@ import {
   RefreshCw,
   Search,
   Tags,
+  Upload,
   X,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -82,6 +84,53 @@ const formatDate = (value: string) =>
   }).format(new Date(value));
 
 const REQUEST_TIMEOUT_MS = 15000;
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
+const MAX_IMAGE_DIMENSION = 4000;
+
+const csvEscape = (value: string | number | boolean | null) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+
+function parseCsvRow(row: string) {
+  const values: string[] = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < row.length; index += 1) {
+    const character = row[index];
+    if (character === '"' && row[index + 1] === '"') {
+      value += '"';
+      index += 1;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      values.push(value.trim());
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+  values.push(value.trim());
+  return values;
+}
+
+async function validateImageFile(file: File) {
+  if (!IMAGE_TYPES.includes(file.type) || file.size > MAX_IMAGE_SIZE) {
+    throw new Error("Product images must be JPG, PNG, or WebP files up to 5 MB.");
+  }
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const dimensions = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+      image.onerror = () => reject(new Error("The selected image could not be read."));
+      image.src = objectUrl;
+    });
+    if (!dimensions.width || !dimensions.height || dimensions.width > MAX_IMAGE_DIMENSION || dimensions.height > MAX_IMAGE_DIMENSION) {
+      throw new Error("Product images must be valid images no larger than 4000 × 4000 pixels.");
+    }
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
 
 function withTimeout<T>(request: PromiseLike<T>, label: string): Promise<T> {
   let timeoutId: number;
@@ -94,16 +143,36 @@ function withTimeout<T>(request: PromiseLike<T>, label: string): Promise<T> {
   ]).finally(() => window.clearTimeout(timeoutId));
 }
 
-function SchemeSlabEditor({ slabs, setSlabs }: { slabs: SchemeSlabForm[]; setSlabs: Dispatch<SetStateAction<SchemeSlabForm[]>> }) {
+function SchemeSlabEditor({ slabs, setSlabs, product }: { slabs: SchemeSlabForm[]; setSlabs: Dispatch<SetStateAction<SchemeSlabForm[]>>; product?: Product }) {
   return <div className="mt-4 rounded-xl border border-line p-4">
     <div className="flex items-center justify-between"><div><p className="font-bold">Quantity tiers</p><p className="text-xs text-slate-500">Ranges must not overlap. Leave maximum empty for the final open-ended tier.</p></div><button type="button" onClick={() => setSlabs((current) => [...current, newSlab()])} className="rounded-lg border border-line px-3 py-2 text-sm font-bold">Add tier</button></div>
     <div className="mt-3 space-y-2">{slabs.map((slab, index) => <div key={index} className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
-      <input required type="number" min="1" placeholder="Minimum units" aria-label={`Tier ${index + 1} minimum units`} value={slab.minimum_quantity} onChange={(event) => setSlabs((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, minimum_quantity: event.target.value } : item))} className="rounded-lg border border-line px-3 py-2" />
-      <input type="number" min="1" placeholder="Maximum units" aria-label={`Tier ${index + 1} maximum units`} value={slab.maximum_quantity} onChange={(event) => setSlabs((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, maximum_quantity: event.target.value } : item))} className="rounded-lg border border-line px-3 py-2" />
-      <input required type="number" min="0" max="100" step="0.01" placeholder="Discount %" aria-label={`Tier ${index + 1} discount percentage`} value={slab.discount_percentage} onChange={(event) => setSlabs((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, discount_percentage: event.target.value } : item))} className="rounded-lg border border-line px-3 py-2" />
+      <label className="text-xs font-bold text-slate-600">From units<input required type="number" min="1" aria-label={`Tier ${index + 1} minimum units`} value={slab.minimum_quantity} onChange={(event) => setSlabs((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, minimum_quantity: event.target.value } : item))} className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm font-normal" /></label>
+      <label className="text-xs font-bold text-slate-600">To units <span className="font-normal">(optional)</span><input type="number" min="1" aria-label={`Tier ${index + 1} maximum units`} value={slab.maximum_quantity} onChange={(event) => setSlabs((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, maximum_quantity: event.target.value } : item))} className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm font-normal" /></label>
+      <label className="text-xs font-bold text-slate-600">Discount<input required type="number" min="0" max="100" step="0.01" aria-label={`Tier ${index + 1} discount percentage`} value={slab.discount_percentage} onChange={(event) => setSlabs((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, discount_percentage: event.target.value } : item))} className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm font-normal" /><span className="text-[11px] font-normal text-slate-500">{product ? `Effective: ₹${(product.base_price * (1 - (Number(slab.discount_percentage) || 0) / 100)).toFixed(2)} / unit` : "Enter a percentage off"}</span></label>
       <button type="button" disabled={slabs.length === 1} onClick={() => setSlabs((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="rounded-lg border border-line px-3 py-2 text-sm font-bold disabled:opacity-40" aria-label={`Remove tier ${index + 1}`}>Remove</button>
     </div>)}</div>
   </div>;
+}
+
+function SchemePreview({ form, product, slabs }: { form: SchemeForm; product: Product | undefined; slabs: SchemeSlabForm[] }) {
+  if (!product) {
+    return <div className="mt-4 rounded-xl border border-dashed border-line bg-paper p-4 text-sm text-slate-500">Select a product to preview what this offer means.</div>;
+  }
+  const minimum = Math.max(1, Number(form.minimum_quantity) || 1);
+  const free = Math.max(0, Number(form.free_quantity) || 0);
+  const discount = Math.min(100, Math.max(0, Number(form.discount_percentage) || 0));
+  const discountedPrice = product.base_price * (1 - discount / 100);
+  const slabSummary = slabs
+    .filter((slab) => Number(slab.minimum_quantity) > 0)
+    .map((slab) => `${slab.minimum_quantity}${slab.maximum_quantity ? `–${slab.maximum_quantity}` : "+"} units: ${slab.discount_percentage}% off`)
+    .join(" · ");
+  const explanation = form.scheme_type === "buy_x_get_y"
+    ? `Buy ${minimum} paid unit${minimum === 1 ? "" : "s"}, get ${free} free. The customer pays ₹${(minimum * product.base_price).toFixed(2)} and receives ${minimum + free} units.`
+    : form.scheme_type === "percentage"
+      ? `Buy at least ${minimum} unit${minimum === 1 ? "" : "s"} and save ${discount}%: ₹${product.base_price.toFixed(2)} becomes ₹${discountedPrice.toFixed(2)} per unit.`
+      : slabSummary || "Add quantity tiers below to define the discount.";
+  return <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4" aria-live="polite"><p className="text-xs font-bold uppercase tracking-wide text-emerald-700">Customer-facing preview</p><p className="mt-1 font-bold text-emerald-900">{explanation}</p><p className="mt-2 text-xs text-emerald-800">Product base price: ₹{product.base_price.toFixed(2)} per unit. This is a draft preview; publish the scheme after checking the dates and quantities.</p></div>;
 }
 
 export default function AdminPage() {
@@ -129,6 +198,9 @@ export default function AdminPage() {
   const [busy, setBusy] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
   const [productImage, setProductImage] = useState<File | null>(null);
+  const [importingProducts, setImportingProducts] = useState(false);
+  const [orderAssignments, setOrderAssignments] = useState<Record<string, string>>({});
+  const [orderNotes, setOrderNotes] = useState<Record<string, string>>({});
 
   const getSupabase = () => createClient();
 
@@ -203,9 +275,11 @@ export default function AdminPage() {
     let imageUrl = productForm.image_url || null;
     let uploadedPath: string | null = null;
     if (productImage) {
-      if (!["image/jpeg", "image/png", "image/webp"].includes(productImage.type) || productImage.size > 5 * 1024 * 1024) {
+      try {
+        await validateImageFile(productImage);
+      } catch (caught) {
         setBusy(false);
-        setError("Product images must be JPG, PNG, or WebP files up to 5 MB.");
+        setError(caught instanceof Error ? caught.message : "The selected product image is invalid.");
         return;
       }
       const extension = productImage.name.split(".").pop()?.toLowerCase() || "jpg";
@@ -241,6 +315,60 @@ export default function AdminPage() {
     setProductImage(null);
     setEditingProduct(null);
     await loadData();
+  };
+
+  const exportProducts = () => {
+    const headers = ["sku", "name", "brand", "category", "pack_size", "mrp", "base_price", "image_url", "description", "is_active"];
+    const rows = products.map((product) => headers.map((header) => csvEscape(product[header as keyof Product] as string | number | boolean | null)).join(","));
+    const blob = new Blob([[headers.join(","), ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `tradescheme-products-${new Date().toISOString().slice(0, 10)}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importProducts = async (file: File) => {
+    setImportingProducts(true);
+    setError("");
+    try {
+      const rows = (await file.text()).split(/\r?\n/).filter((row) => row.trim()).map(parseCsvRow);
+      if (rows.length < 2) throw new Error("The CSV must include a header row and at least one product.");
+      const headers = rows[0].map((header) => header.toLowerCase());
+      const requiredHeaders = ["sku", "name", "brand", "category", "pack_size", "mrp", "base_price"];
+      const missingHeader = requiredHeaders.find((header) => !headers.includes(header));
+      if (missingHeader) throw new Error(`The CSV is missing the required "${missingHeader}" column.`);
+      const imported = rows.slice(1).map((row, rowIndex) => {
+        const values = Object.fromEntries(headers.map((header, index) => [header, row[index] ?? ""]));
+        const mrp = Number(values.mrp);
+        const basePrice = Number(values.base_price);
+        if (!values.sku || !values.name || !Number.isFinite(mrp) || !Number.isFinite(basePrice) || mrp < 0 || basePrice < 0) {
+          throw new Error(`Invalid product data on CSV row ${rowIndex + 2}. Check SKU, name, MRP, and base price.`);
+        }
+        return {
+          sku: values.sku,
+          name: values.name,
+          brand: values.brand,
+          category: values.category,
+          pack_size: values.pack_size,
+          mrp,
+          base_price: basePrice,
+          image_url: values.image_url || null,
+          description: values.description || null,
+          is_active: values.is_active !== "false",
+          updated_at: new Date().toISOString(),
+        };
+      });
+      const { error: importError } = await getSupabase().from("products").upsert(imported, { onConflict: "sku" });
+      if (importError) throw new Error(importError.message);
+      setMessage(`${imported.length} product${imported.length === 1 ? "" : "s"} imported.`);
+      await loadData();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to import products.");
+    } finally {
+      setImportingProducts(false);
+    }
   };
 
   const toggleProduct = async (product: Product) => {
@@ -327,16 +455,39 @@ export default function AdminPage() {
     }
   };
 
-  const updateOrderStatus = async (order: Order, status: Order["status"]) => {
+  const updateOrder = async (order: Order, updates: Partial<Pick<Order, "status" | "assigned_to" | "internal_notes">>) => {
     setBusy(true);
     setError("");
-    const { error: updateError } = await getSupabase().from("orders").update({ status }).eq("id", order.id);
+    const payload = { ...updates, ...(updates.status && updates.status !== "new" && !order.acknowledged_at ? { acknowledged_at: new Date().toISOString() } : {}) };
+    const { error: updateError } = await getSupabase().from("orders").update(payload).eq("id", order.id);
     setBusy(false);
     if (updateError) setError(updateError.message);
     else {
-      setMessage(`Order marked ${status}.`);
+      setMessage(updates.status ? `Order marked ${updates.status}.` : "Order details saved.");
       await loadData();
     }
+  };
+
+  const exportOrders = () => {
+    const headers = ["order_number", "customer_name", "customer_phone", "customer_business", "status", "assigned_to", "created_at", "acknowledged_at", "internal_notes"];
+    const rows = orders.map((order) => headers.map((header) => csvEscape(order[header as keyof Order] as string | number | boolean | null)).join(","));
+    const blob = new Blob([[headers.join(","), ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `tradescheme-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const copyOrderTemplate = async (order: Order, template: "received" | "confirmed" | "fulfilled") => {
+    const templates = {
+      received: `Hi ${order.customer_name}, we received your order request ${order.order_number}. We are checking availability and will confirm shortly.`,
+      confirmed: `Hi ${order.customer_name}, your order ${order.order_number} is confirmed. We will share delivery details soon.`,
+      fulfilled: `Hi ${order.customer_name}, order ${order.order_number} has been fulfilled. Thank you for your business.`,
+    };
+    await navigator.clipboard.writeText(templates[template]);
+    setMessage("Response template copied.");
   };
 
   const filteredOrders = useMemo(() => orders.filter((order) => {
@@ -448,20 +599,20 @@ export default function AdminPage() {
         </section>}
 
         {view === "orders" && <section>
-          <div className="mb-6"><p className="eyebrow">Order inbox</p><h1 className="mt-1 text-3xl font-black">Incoming requests</h1><p className="mt-2 text-sm text-slate-500">Review customer details, confirm availability, and move each request through fulfilment.</p></div>
+          <div className="mb-6 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="eyebrow">Order inbox</p><h1 className="mt-1 text-3xl font-black">Incoming requests</h1><p className="mt-2 text-sm text-slate-500">Review customer details, confirm availability, and move each request through fulfilment.</p></div><button type="button" onClick={exportOrders} className="flex items-center gap-2 self-start rounded-xl border border-line px-3 py-3 text-sm font-bold text-navy sm:self-auto"><Download size={17} /> Export orders</button></div>
           <div className="card mb-5 grid gap-3 p-4 md:grid-cols-[1fr_auto]"><label className="flex items-center gap-2 rounded-xl border border-line px-3"><Search size={17} className="text-slate-400" /><input value={orderQuery} onChange={(event) => setOrderQuery(event.target.value)} placeholder="Search reference, customer, phone..." className="w-full py-2 outline-none" /></label><label className="flex items-center gap-2"><Filter size={16} className="text-slate-500" /><select value={orderStatus} onChange={(event) => setOrderStatus(event.target.value as typeof orderStatus)} className="rounded-xl border border-line px-3 py-2"><option value="all">All statuses</option><option value="new">New</option><option value="confirmed">Confirmed</option><option value="rejected">Rejected</option><option value="fulfilled">Fulfilled</option></select></label></div>
-          <div className="space-y-4">{filteredOrders.map((order) => <article key={order.id} className="card p-5"><div className="flex flex-col justify-between gap-4 md:flex-row"><div><div className="flex flex-wrap items-center gap-2"><span className="rounded-md bg-navy px-2 py-1 text-xs font-black text-white">{order.order_number || `TS-${order.id.slice(0, 8).toUpperCase()}`}</span><span className="rounded-md bg-paper px-2 py-1 text-xs font-bold capitalize text-slate-600">{order.status}</span></div><h2 className="mt-3 text-lg font-black">{order.customer_name}</h2><p className="text-sm text-slate-500">{order.customer_business || "Retail customer"} · {order.customer_phone}</p><p className="mt-1 text-xs text-slate-400">{formatDate(order.created_at)}</p></div><select value={order.status} disabled={busy} onChange={(event) => void updateOrderStatus(order, event.target.value as Order["status"])} className="h-10 rounded-xl border border-line px-3 text-sm font-bold"><option value="new">New</option><option value="confirmed">Confirmed</option><option value="rejected">Rejected</option><option value="fulfilled">Fulfilled</option></select></div><div className="mt-4 border-t border-line pt-4">{order.order_items?.map((item, index) => <div key={`${order.id}-${index}`} className="flex justify-between gap-3 py-1 text-sm"><span>{item.product_name} <span className="text-slate-400">× {item.quantity}</span></span><span className="font-bold">₹{item.effective_price.toFixed(2)} / unit</span></div>)}</div>{(order.delivery_address || order.notes) && <div className="mt-3 rounded-xl bg-paper p-3 text-sm text-slate-600"><strong>Notes:</strong> {[order.delivery_address, order.notes].filter(Boolean).join(" · ")}</div>}</article>)}{filteredOrders.length === 0 && <div className="card p-10 text-center"><Database className="mx-auto text-slate-300" /><p className="mt-3 font-bold">No matching orders</p><p className="mt-1 text-sm text-slate-500">New client requests will appear here.</p></div>}</div>
+          <div className="space-y-4">{filteredOrders.map((order) => { const ageHours = (Date.now() - new Date(order.created_at).getTime()) / 3_600_000; const slaBreached = order.status === "new" && ageHours >= 24; return <article key={order.id} className="card p-5"><div className="flex flex-col justify-between gap-4 md:flex-row"><div><div className="flex flex-wrap items-center gap-2"><span className="rounded-md bg-navy px-2 py-1 text-xs font-black text-white">{order.order_number || `TS-${order.id.slice(0, 8).toUpperCase()}`}</span><span className="rounded-md bg-paper px-2 py-1 text-xs font-bold capitalize text-slate-600">{order.status}</span>{slaBreached ? <span className="rounded-md bg-red-50 px-2 py-1 text-xs font-bold text-red-700">SLA overdue</span> : order.status === "new" && <span className="rounded-md bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">Respond within {Math.max(1, Math.ceil(24 - ageHours))}h</span>}</div><h2 className="mt-3 text-lg font-black">{order.customer_name}</h2><p className="text-sm text-slate-500">{order.customer_business || "Retail customer"} · {order.customer_phone}</p><p className="mt-1 text-xs text-slate-400">{formatDate(order.created_at)}</p></div><select aria-label={`Status for ${order.order_number}`} value={order.status} disabled={busy} onChange={(event) => void updateOrder(order, { status: event.target.value as Order["status"] })} className="h-10 rounded-xl border border-line px-3 text-sm font-bold"><option value="new">New</option><option value="confirmed">Confirmed</option><option value="rejected">Rejected</option><option value="fulfilled">Fulfilled</option></select></div><div className="mt-4 border-t border-line pt-4">{order.order_items?.map((item, index) => <div key={`${order.id}-${index}`} className="flex justify-between gap-3 py-1 text-sm"><span>{item.product_name} <span className="text-slate-400">× {item.quantity}</span></span><span className="font-bold">₹{item.effective_price.toFixed(2)} / unit</span></div>)}</div>{(order.delivery_address || order.notes) && <div className="mt-3 rounded-xl bg-paper p-3 text-sm text-slate-600"><strong>Customer notes:</strong> {[order.delivery_address, order.notes].filter(Boolean).join(" · ")}</div>}<div className="mt-4 grid gap-3 border-t border-line pt-4 sm:grid-cols-2"><label className="text-sm font-bold text-slate-600">Assigned owner<input value={orderAssignments[order.id] ?? order.assigned_to ?? ""} onChange={(event) => setOrderAssignments((current) => ({ ...current, [order.id]: event.target.value }))} onBlur={() => { const owner = orderAssignments[order.id] ?? order.assigned_to ?? ""; if (owner !== (order.assigned_to || "")) void updateOrder(order, { assigned_to: owner || null }); }} placeholder="Name or team" className="mt-1 w-full rounded-lg border border-line px-3 py-2 font-normal" /></label><label className="text-sm font-bold text-slate-600">Internal notes<textarea value={orderNotes[order.id] ?? order.internal_notes ?? ""} onChange={(event) => setOrderNotes((current) => ({ ...current, [order.id]: event.target.value }))} onBlur={() => { const notes = orderNotes[order.id] ?? order.internal_notes ?? ""; if (notes !== (order.internal_notes || "")) void updateOrder(order, { internal_notes: notes || null }); }} placeholder="Private fulfilment notes" rows={2} className="mt-1 w-full rounded-lg border border-line px-3 py-2 font-normal" /></label></div><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => void copyOrderTemplate(order, "received")} className="rounded-lg border border-line px-3 py-2 text-xs font-bold">Copy received reply</button><button type="button" onClick={() => void copyOrderTemplate(order, "confirmed")} className="rounded-lg border border-line px-3 py-2 text-xs font-bold">Copy confirmed reply</button><button type="button" onClick={() => void copyOrderTemplate(order, "fulfilled")} className="rounded-lg border border-line px-3 py-2 text-xs font-bold">Copy fulfilled reply</button></div></article>; })}{filteredOrders.length === 0 && <div className="card p-10 text-center"><Database className="mx-auto text-slate-300" /><p className="mt-3 font-bold">No matching orders</p><p className="mt-1 text-sm text-slate-500">New client requests will appear here.</p></div>}</div>
         </section>}
 
         {view === "products" && <section>
-          <div className="mb-6 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="eyebrow">Catalogue management</p><h1 className="mt-1 text-3xl font-black">Products</h1><p className="mt-2 text-sm text-slate-500">Edit pricing or hide products without deleting their order history.</p></div><button type="button" onClick={() => { setEditingProduct(null); setProductForm(emptyProduct); }} className="flex items-center gap-2 rounded-xl bg-navy px-4 py-3 text-sm font-bold text-white"><Plus size={17} /> Add product</button></div>
-          <form onSubmit={saveProduct} className="card mb-6 p-5"><div className="mb-4 flex items-center justify-between"><h2 className="font-black">{editingProduct ? "Edit product" : "New product"}</h2>{editingProduct && <button type="button" onClick={() => { setEditingProduct(null); setProductForm(emptyProduct); setProductImage(null); }} className="text-sm font-bold text-slate-500">Cancel</button>}</div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><input required placeholder="SKU" value={productForm.sku} onChange={(event) => setProductForm((current) => ({ ...current, sku: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required placeholder="Name" value={productForm.name} onChange={(event) => setProductForm((current) => ({ ...current, name: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required placeholder="Brand" value={productForm.brand} onChange={(event) => setProductForm((current) => ({ ...current, brand: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required placeholder="Category" value={productForm.category} onChange={(event) => setProductForm((current) => ({ ...current, category: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required placeholder="Pack size" value={productForm.pack_size} onChange={(event) => setProductForm((current) => ({ ...current, pack_size: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required type="number" min="0" step="0.01" placeholder="MRP" value={productForm.mrp} onChange={(event) => setProductForm((current) => ({ ...current, mrp: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required type="number" min="0" step="0.01" placeholder="Base price" value={productForm.base_price} onChange={(event) => setProductForm((current) => ({ ...current, base_price: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><label className="rounded-xl border border-line px-3 py-2 text-sm font-bold text-slate-600"><span className="block text-xs text-slate-500">Product image</span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setProductImage(event.target.files?.[0] ?? null)} className="mt-1 w-full text-sm" /><span className="mt-1 block text-xs font-normal text-slate-500">JPG, PNG, or WebP up to 5 MB</span></label></div>{(productImage || productForm.image_url) && <div className="mt-4 flex items-center gap-3 rounded-xl bg-paper p-3">{productForm.image_url && <img src={productForm.image_url} alt="Current product" className="h-16 w-16 rounded-lg object-contain" />}<span className="text-sm text-slate-600">{productImage ? `Selected: ${productImage.name}` : "Current product image"}</span></div>}<button disabled={busy} className="mt-4 rounded-xl bg-mint px-4 py-3 text-sm font-bold text-white">{busy ? productImage ? "Uploading image..." : "Saving..." : editingProduct ? "Update product" : "Save product"}</button></form>
+          <div className="mb-6 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="eyebrow">Catalogue management</p><h1 className="mt-1 text-3xl font-black">Products</h1><p className="mt-2 text-sm text-slate-500">Edit pricing or hide products without deleting their order history.</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={exportProducts} className="flex items-center gap-2 rounded-xl border border-line px-3 py-3 text-sm font-bold text-navy"><Download size={17} /> Export CSV</button><label className={`flex cursor-pointer items-center gap-2 rounded-xl border border-line px-3 py-3 text-sm font-bold text-navy ${importingProducts ? "cursor-wait opacity-60" : ""}`}><Upload size={17} /> {importingProducts ? "Importing..." : "Import CSV"}<input type="file" accept=".csv,text/csv" disabled={importingProducts} onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProducts(file); event.currentTarget.value = ""; }} className="sr-only" /></label><button type="button" onClick={() => { setEditingProduct(null); setProductForm(emptyProduct); }} className="flex items-center gap-2 rounded-xl bg-navy px-4 py-3 text-sm font-bold text-white"><Plus size={17} /> Add product</button></div></div>
+          <form onSubmit={saveProduct} className="card mb-6 p-5"><div className="mb-4 flex items-center justify-between"><h2 className="font-black">{editingProduct ? "Edit product" : "New product"}</h2>{editingProduct && <button type="button" onClick={() => { setEditingProduct(null); setProductForm(emptyProduct); setProductImage(null); }} className="text-sm font-bold text-slate-500">Cancel</button>}</div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><input required placeholder="SKU" value={productForm.sku} onChange={(event) => setProductForm((current) => ({ ...current, sku: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required placeholder="Name" value={productForm.name} onChange={(event) => setProductForm((current) => ({ ...current, name: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required placeholder="Brand" value={productForm.brand} onChange={(event) => setProductForm((current) => ({ ...current, brand: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required placeholder="Category" value={productForm.category} onChange={(event) => setProductForm((current) => ({ ...current, category: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required placeholder="Pack size" value={productForm.pack_size} onChange={(event) => setProductForm((current) => ({ ...current, pack_size: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required type="number" min="0" step="0.01" placeholder="MRP" value={productForm.mrp} onChange={(event) => setProductForm((current) => ({ ...current, mrp: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required type="number" min="0" step="0.01" placeholder="Base price" value={productForm.base_price} onChange={(event) => setProductForm((current) => ({ ...current, base_price: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><label className="rounded-xl border border-line px-3 py-2 text-sm font-bold text-slate-600"><span className="block text-xs text-slate-500">Product image</span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setProductImage(event.target.files?.[0] ?? null)} className="mt-1 w-full text-sm" /><span className="mt-1 block text-xs font-normal text-slate-500">JPG, PNG, or WebP up to 5 MB, max 4000 × 4000 px</span></label></div>{(productImage || productForm.image_url) && <div className="mt-4 flex items-center gap-3 rounded-xl bg-paper p-3">{productForm.image_url && <img src={productForm.image_url} alt="Current product" className="h-16 w-16 rounded-lg object-contain" />}<span className="text-sm text-slate-600">{productImage ? `Selected: ${productImage.name}` : "Current product image"}</span></div>}<button type="submit" disabled={busy} className="mt-4 rounded-xl bg-mint px-4 py-3 text-sm font-bold text-white">{busy ? productImage ? "Uploading image..." : "Saving..." : editingProduct ? "Update product" : "Save product"}</button></form>
           <div className="card overflow-hidden"><div className="flex flex-col gap-3 border-b border-line p-4 sm:flex-row"><label className="flex flex-1 items-center gap-2 rounded-xl border border-line px-3"><Search size={17} className="text-slate-400" /><input value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="Search products..." className="w-full py-2 outline-none" /></label><label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} /> Show hidden</label></div><div className="divide-y divide-line">{filteredProducts.map((product) => <div key={product.id} className="flex flex-col justify-between gap-3 p-4 sm:flex-row sm:items-center"><div><div className="flex items-center gap-2"><h2 className="font-black">{product.name}</h2><span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${product.is_active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{product.is_active ? "Active" : "Hidden"}</span></div><p className="text-sm text-slate-500">{product.brand} · {product.sku} · ₹{product.base_price.toFixed(2)}</p></div><div className="flex gap-2"><button type="button" onClick={() => beginProductEdit(product)} className="flex items-center gap-1 rounded-lg border border-line px-3 py-2 text-sm font-bold"><Edit3 size={15} /> Edit</button><button type="button" disabled={busy} onClick={() => void toggleProduct(product)} className="rounded-lg border border-line px-3 py-2 text-sm font-bold text-slate-600">{product.is_active ? "Hide" : "Restore"}</button></div></div>)}{filteredProducts.length === 0 && <p className="p-8 text-center text-sm text-slate-500">No products match this search.</p>}</div></div>
         </section>}
 
         {view === "schemes" && <section>
           <div className="mb-6"><p className="eyebrow">Trade offer management</p><h1 className="mt-1 text-3xl font-black">Schemes</h1><p className="mt-2 text-sm text-slate-500">Draft, publish, edit, or deactivate offers without touching code.</p></div>
-          <form onSubmit={saveScheme} className="card mb-6 p-5"><div className="mb-4 flex items-center justify-between"><h2 className="font-black">{editingScheme ? "Edit scheme" : "New scheme"}</h2>{editingScheme && <button type="button" onClick={() => { setEditingScheme(null); setSchemeForm(newScheme()); setSlabForms([newSlab()]); }} className="text-sm font-bold text-slate-500">Cancel</button>}</div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><select required value={schemeForm.product_id} onChange={(event) => setSchemeForm((current) => ({ ...current, product_id: event.target.value }))} className="rounded-xl border border-line px-3 py-3"><option value="">Select product</option>{products.filter((product) => product.is_active).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.sku}</option>)}</select><select value={schemeForm.scheme_type} onChange={(event) => setSchemeForm((current) => ({ ...current, scheme_type: event.target.value as SchemeType }))} className="rounded-xl border border-line px-3 py-3"><option value="buy_x_get_y">Buy X get Y</option><option value="percentage">Percentage discount</option><option value="slab">Quantity slab</option></select><input required type="number" min="1" placeholder="Minimum quantity" value={schemeForm.minimum_quantity} onChange={(event) => setSchemeForm((current) => ({ ...current, minimum_quantity: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input type="number" min="0" placeholder="Free quantity" value={schemeForm.free_quantity} onChange={(event) => setSchemeForm((current) => ({ ...current, free_quantity: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input type="number" min="0" max="100" step="0.01" placeholder="Discount %" value={schemeForm.discount_percentage} onChange={(event) => setSchemeForm((current) => ({ ...current, discount_percentage: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input required type="datetime-local" value={schemeForm.starts_at} onChange={(event) => setSchemeForm((current) => ({ ...current, starts_at: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><input type="datetime-local" value={schemeForm.expires_at} onChange={(event) => setSchemeForm((current) => ({ ...current, expires_at: event.target.value }))} className="rounded-xl border border-line px-3 py-3" /><textarea placeholder="Notes for the team or customer" value={schemeForm.notes} onChange={(event) => setSchemeForm((current) => ({ ...current, notes: event.target.value }))} className="min-h-12 rounded-xl border border-line px-3 py-3 sm:col-span-2" /></div>{schemeForm.scheme_type === "slab" && <SchemeSlabEditor slabs={slabForms} setSlabs={setSlabForms} />}<label className="mt-3 flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={schemeForm.repeat_offer} onChange={(event) => setSchemeForm((current) => ({ ...current, repeat_offer: event.target.checked }))} /> Repeat offer for every qualifying batch</label><button disabled={busy} className="mt-4 rounded-xl bg-mint px-4 py-3 text-sm font-bold text-white">{busy ? "Saving..." : editingScheme ? "Update scheme" : "Save as draft"}</button></form>
+          <form onSubmit={saveScheme} className="card mb-6 p-5"><div className="mb-4 flex items-center justify-between"><div><h2 className="font-black">{editingScheme ? "Edit scheme" : "New scheme"}</h2><p className="mt-1 text-xs text-slate-500">Choose an offer type, then fill only the values that define it.</p></div>{editingScheme && <button type="button" onClick={() => { setEditingScheme(null); setSchemeForm(newScheme()); setSlabForms([newSlab()]); }} className="text-sm font-bold text-slate-500">Cancel</button>}</div><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"><label className="block text-sm font-bold text-slate-700 sm:col-span-2 lg:col-span-1"><span>Product</span><select required value={schemeForm.product_id} onChange={(event) => setSchemeForm((current) => ({ ...current, product_id: event.target.value }))} className="mt-1 w-full rounded-xl border border-line px-3 py-3 font-normal"><option value="">Select product</option>{products.filter((product) => product.is_active).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.sku}</option>)}</select></label><label className="block text-sm font-bold text-slate-700"><span>Offer type</span><select value={schemeForm.scheme_type} onChange={(event) => setSchemeForm((current) => ({ ...current, scheme_type: event.target.value as SchemeType }))} className="mt-1 w-full rounded-xl border border-line px-3 py-3 font-normal"><option value="buy_x_get_y">Buy X, get Y free</option><option value="percentage">Percentage price discount</option><option value="slab">Quantity-based discount tiers</option></select></label>{schemeForm.scheme_type !== "slab" && <label className="block text-sm font-bold text-slate-700"><span>{schemeForm.scheme_type === "buy_x_get_y" ? "Paid units required" : "Minimum units to qualify"}</span><span className="block text-xs font-normal text-slate-500">{schemeForm.scheme_type === "buy_x_get_y" ? "How many units the customer pays for" : "Smallest order quantity that receives the discount"}</span><input required type="number" min="1" value={schemeForm.minimum_quantity} onChange={(event) => setSchemeForm((current) => ({ ...current, minimum_quantity: event.target.value }))} className="mt-1 w-full rounded-xl border border-line px-3 py-3 font-normal" /></label>}{schemeForm.scheme_type === "buy_x_get_y" && <label className="block text-sm font-bold text-slate-700"><span>Free units included</span><span className="block text-xs font-normal text-slate-500">Units added at no charge</span><input required type="number" min="1" value={schemeForm.free_quantity} onChange={(event) => setSchemeForm((current) => ({ ...current, free_quantity: event.target.value }))} className="mt-1 w-full rounded-xl border border-line px-3 py-3 font-normal" /></label>}{schemeForm.scheme_type === "percentage" && <label className="block text-sm font-bold text-slate-700"><span>Discount percentage</span><span className="block text-xs font-normal text-slate-500">Percentage removed from the base price</span><div className="mt-1 flex items-center"><input required type="number" min="0" max="100" step="0.01" value={schemeForm.discount_percentage} onChange={(event) => setSchemeForm((current) => ({ ...current, discount_percentage: event.target.value }))} className="w-full rounded-l-xl border border-line px-3 py-3 font-normal" /><span className="rounded-r-xl border border-l-0 border-line bg-paper px-3 py-3">%</span></div></label>}{schemeForm.scheme_type === "slab" && <div className="rounded-xl border border-dashed border-line bg-paper p-3 text-sm text-slate-600 sm:col-span-2 lg:col-span-3"><strong>How slab discounts work:</strong> customers receive the percentage attached to the quantity range they reach. Example: 10–19 units at 5% off means ₹100 becomes ₹95 per unit.</div>}<label className="block text-sm font-bold text-slate-700"><span>Starts</span><input required type="datetime-local" value={schemeForm.starts_at} onChange={(event) => setSchemeForm((current) => ({ ...current, starts_at: event.target.value }))} className="mt-1 w-full rounded-xl border border-line px-3 py-3 font-normal" /></label><label className="block text-sm font-bold text-slate-700"><span>Expires (optional)</span><input type="datetime-local" value={schemeForm.expires_at} onChange={(event) => setSchemeForm((current) => ({ ...current, expires_at: event.target.value }))} className="mt-1 w-full rounded-xl border border-line px-3 py-3 font-normal" /></label><label className="block text-sm font-bold text-slate-700 sm:col-span-2"><span>Notes</span><textarea placeholder="Example: Buy 10 cartons and receive 1 carton free." value={schemeForm.notes} onChange={(event) => setSchemeForm((current) => ({ ...current, notes: event.target.value }))} className="mt-1 min-h-12 w-full rounded-xl border border-line px-3 py-3 font-normal" /></label></div>{schemeForm.scheme_type === "slab" && <SchemeSlabEditor slabs={slabForms} setSlabs={setSlabForms} product={products.find((product) => product.id === schemeForm.product_id)} />}<SchemePreview form={schemeForm} product={products.find((product) => product.id === schemeForm.product_id)} slabs={slabForms} /><label className="mt-3 flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={schemeForm.repeat_offer} onChange={(event) => setSchemeForm((current) => ({ ...current, repeat_offer: event.target.checked }))} /> Repeat “Buy X, get Y free” for every qualifying batch</label><button type="submit" disabled={busy} className="mt-4 rounded-xl bg-mint px-4 py-3 text-sm font-bold text-white">{busy ? "Saving..." : editingScheme ? "Update scheme" : "Save as draft"}</button></form>
           <div className="space-y-3">{schemes.map((scheme) => <article key={scheme.id} className="card flex flex-col justify-between gap-4 p-5 sm:flex-row sm:items-center"><div><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-paper px-2 py-1 text-xs font-black capitalize text-slate-600">{scheme.status}</span><span className="text-xs text-slate-400">{formatDate(scheme.updated_at)}</span></div><h2 className="mt-2 font-black">{products.find((product) => product.id === scheme.product_id)?.name ?? "Unknown product"}</h2><p className="text-sm text-slate-500">{scheme.scheme_type === "buy_x_get_y" ? `Buy ${scheme.minimum_quantity}, get ${scheme.free_quantity} free` : scheme.scheme_type === "percentage" ? `${scheme.discount_percentage}% discount from ${scheme.minimum_quantity} units` : "Quantity slab offer"}</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => beginSchemeEdit(scheme)} className="flex items-center gap-1 rounded-lg border border-line px-3 py-2 text-sm font-bold"><Edit3 size={15} /> Edit</button>{scheme.status !== "published" && <button type="button" disabled={busy} onClick={() => void updateSchemeStatus(scheme, "published")} className="rounded-lg bg-mint px-3 py-2 text-sm font-bold text-white">Publish</button>}{scheme.status === "published" && <button type="button" disabled={busy} onClick={() => void updateSchemeStatus(scheme, "inactive")} className="rounded-lg border border-line px-3 py-2 text-sm font-bold">Deactivate</button>}</div></article>)}{schemes.length === 0 && <div className="card p-8 text-center text-sm text-slate-500">No schemes yet. Create the first draft above.</div>}</div>
         </section>}
       </div>

@@ -57,6 +57,9 @@ export type Order = {
   customer_business: string | null;
   delivery_address: string | null;
   notes: string | null;
+  assigned_to: string | null;
+  internal_notes: string | null;
+  acknowledged_at: string | null;
   status: "new" | "confirmed" | "rejected" | "fulfilled";
   created_at: string;
   order_items?: Array<{
